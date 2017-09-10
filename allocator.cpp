@@ -9,6 +9,21 @@
 
 #include <cassert>
 
+inline int get_offset(void * __ptr) {
+	int offset = reinterpret_cast<long long>(__ptr) % getpagesize();
+	if (offset == 0) {
+		offset = getpagesize();
+	}
+	return offset;
+}
+
+inline size_t * get_start(void * __ptr) {
+	int offset = get_offset(__ptr);
+	void * alloc_ptr =
+			reinterpret_cast<void *>(reinterpret_cast<long long>(__ptr) - offset);
+	return reinterpret_cast<size_t *>(alloc_ptr);
+}
+
 extern "C" {
 
 extern void *malloc(size_t __size) {
@@ -20,16 +35,12 @@ extern void *malloc(size_t __size) {
 }
 
 extern void free(void *__ptr) {
-	if(__ptr == nullptr){
+	if (__ptr == nullptr) {
 		return;
 	}
-	int offset = reinterpret_cast<long long>(__ptr) % getpagesize();
-	if (offset == 0) {
-		offset = getpagesize();
-	}
-	void * alloc_ptr =
-			reinterpret_cast<void *>(reinterpret_cast<long long>(__ptr) - offset);
-	size_t size = *reinterpret_cast<size_t *>(alloc_ptr);
+	int offset = get_offset(__ptr);
+	size_t * alloc_ptr = get_start(__ptr);
+	size_t size = *alloc_ptr;
 	munmap(alloc_ptr, size + offset);
 }
 
@@ -41,7 +52,13 @@ extern void *calloc(size_t __nmemb, size_t __size) {
 
 extern void *realloc(void *__ptr, size_t __size) {
 	void * newptr = malloc(__size);
-	free(__ptr);
+	if (__ptr != nullptr) {
+		size_t old_size = *get_start(__ptr);
+		if (old_size > __size)
+			old_size = __size;
+		memcpy(newptr, __ptr, old_size);
+		free(__ptr);
+	}
 	return newptr;
 }
 
