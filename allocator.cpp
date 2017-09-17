@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <bits/stdc++.h>
 
+#include "work_with_slabs.h"
+
 #include <cassert>
 
 inline int get_offset(void * __ptr) {
@@ -27,6 +29,12 @@ inline size_t * get_start(void * __ptr) {
 extern "C" {
 
 extern void *malloc(size_t __size) {
+	if (__size == 0) {
+		return reinterpret_cast<void *>(0xdeadbeef);
+	}
+	if (__size <= 64) {
+		return alloc_block_in_slab(__size);
+	}
 	void * nl = mmap(NULL, __size + sizeof(size_t),
 	PROT_READ | PROT_WRITE | PROT_EXEC,
 	MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
@@ -35,7 +43,11 @@ extern void *malloc(size_t __size) {
 }
 
 extern void free(void *__ptr) {
-	if (__ptr == nullptr) {
+	if (__ptr == nullptr || reinterpret_cast<long long>(__ptr) == 0xdeadbeef) {
+		return;
+	}
+	if (is_allocated_by_slab(__ptr)) {
+		free_block_in_slab(__ptr);
 		return;
 	}
 	int offset = get_offset(__ptr);
@@ -51,6 +63,9 @@ extern void *calloc(size_t __nmemb, size_t __size) {
 }
 
 extern void *realloc(void *__ptr, size_t __size) {
+	if (is_allocated_by_slab(__ptr)) {
+		return realloc_block_in_slab(__ptr, __size);
+	}
 	void * newptr = malloc(__size);
 	if (__ptr != nullptr) {
 		size_t old_size = *get_start(__ptr);
