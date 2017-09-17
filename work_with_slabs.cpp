@@ -25,6 +25,17 @@ struct thread_slab_storage {
 	~thread_slab_storage();
 };
 
+struct slab_free_pages {
+	static const int FREE_PAGES_MAX = 200;
+	std::mutex m;
+	int free_pages_count;
+	void * pages[FREE_PAGES_MAX];
+	slab * get_slab(int elem_size, thread_slab_storage * parent);
+	void recycle_slab(slab * slab);
+};
+
+slab_free_pages pages;
+
 struct slab {
 	union {
 		long long SLAB_MAGIC;
@@ -74,45 +85,40 @@ struct slab {
 			} else {
 				parent_alive = false;
 			}
+		} else if (!parent_alive && fcnt == int(sizeof(data) / elem_size) - 1) {
+			pages.recycle_slab(this);
 		}
 	}
 };
 
-struct slab_free_pages {
-	static const int FREE_PAGES_MAX = 200;
-	std::mutex m;
-	int free_pages_count;
-	void * pages[FREE_PAGES_MAX];
-	slab * get_slab(int elem_size, thread_slab_storage * parent) {
-//		m.native_handle();
-		std::lock_guard<std::mutex> lok(m);
-		if (free_pages_count == 0) {
+slab * slab_free_pages::get_slab(int elem_size, thread_slab_storage * parent) {
+	std::lock_guard<std::mutex> lok(m);
+	if (free_pages_count == 0) {
 #ifdef _WIN64
-			pages[free_pages_count++] = malloc(sizeof(slab));
+		pages[free_pages_count++] = malloc(sizeof(slab));
 #else
-			pages[free_pages_count++] = mmap(nullptr, sizeof(slab),
-			PROT_READ | PROT_WRITE,
-			MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
+		pages[free_pages_count++] = mmap(nullptr, sizeof(slab),
+		PROT_READ | PROT_WRITE,
+		MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
 #endif
-		}
-		return new (pages[--free_pages_count]) slab(elem_size, parent);
 	}
-	void recycle_slab(slab * slab) {
-		slab->~slab();
-		std::lock_guard<std::mutex> lok(m);
-		if (free_pages_count < FREE_PAGES_MAX) {
-			pages[free_pages_count++] = slab;
-		} else {
+	parent->full.fetch_add(1);
+	return new (pages[--free_pages_count]) slab(elem_size, parent);
+}
+void slab_free_pages::recycle_slab(slab * slab) {
+	slab->parent->full.fetch_sub(1);
+	slab->~slab();
+	std::lock_guard<std::mutex> lok(m);
+	if (free_pages_count < FREE_PAGES_MAX) {
+		pages[free_pages_count++] = slab;
+	} else {
 #ifdef _WIN64
-			free(slab);
+		free(slab);
 #else
-			munmap(slab, sizeof(slab));
+		munmap(slab, sizeof(slab));
 #endif
-		}
 	}
-};
-
-slab_free_pages pages;
+}
 
 thread_slab_storage::thread_slab_storage() {
 	full.store(0);
@@ -131,7 +137,6 @@ void * thread_slab_storage::alloc_in_storage(size_t size) {
 	slab * s = slb[sslab].load();
 	if (s == nullptr) {
 		s = pages.get_slab(slab_t_size[sslab], this);
-		full.fetch_add(1);
 	} else {
 		while (!slb[sslab].compare_exchange_weak(s, s->next.load())) {
 		}
