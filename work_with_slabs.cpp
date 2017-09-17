@@ -61,7 +61,12 @@ struct slab {
 		return res;
 	}
 	void free_here(void * ptr) {
-		*reinterpret_cast<void **>(ptr) = freeptr.exchange(ptr);
+		void * oldfree = freeptr.load();
+		*reinterpret_cast<void **>(ptr) = oldfree;
+		while (!freeptr.compare_exchange_weak(oldfree, ptr)) {
+			*reinterpret_cast<void **>(ptr) = oldfree;
+		}
+//		*reinterpret_cast<void **>(ptr) = freeptr.exchange(ptr);
 		int fcnt = freecnt.fetch_add(1);
 		if (fcnt == 0 && parent_alive) {
 			if (parent->alive.load()) {
